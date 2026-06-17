@@ -286,6 +286,45 @@ HTML = r"""<!DOCTYPE html>
     font-size: 12px; color: var(--text2); background: #f1f5f9;
     padding: 3px 10px; border-radius: 20px; font-weight: 600;
   }
+
+  /* Picker modal */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; z-index: 100;
+    background: rgba(15,23,42,.4); align-items: center; justify-content: center;
+  }
+  .modal-overlay.active { display: flex; }
+  .modal-card {
+    background: var(--card); border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,.15);
+    width: 560px; max-width: 94vw; max-height: 80vh; display: flex; flex-direction: column;
+  }
+  .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+  }
+  .modal-header h3 { font-size: 15px; font-weight: 700; }
+  .modal-close {
+    background: none; border: none; font-size: 20px; cursor: pointer;
+    color: var(--text2); padding: 0 4px; line-height: 1;
+  }
+  .modal-close:hover { color: var(--text); }
+  .modal-path {
+    font-size: 12px; color: var(--text2); padding: 8px 18px;
+    background: #f8fafc; border-bottom: 1px solid var(--border);
+    word-break: break-all;
+  }
+  .modal-body { flex: 1; overflow-y: auto; padding: 0; }
+  .modal-body .dir-item {
+    display: flex; align-items: center; gap: 10px; padding: 9px 18px;
+    cursor: pointer; transition: background .1s;
+  }
+  .modal-body .dir-item:hover { background: #f1f5f9; }
+  .modal-body .dir-item .dir-icon { font-size: 16px; }
+  .modal-body .dir-item .dir-name { font-size: 13px; font-weight: 500; }
+  .modal-body .empty-picker { text-align: center; padding: 40px; color: var(--text2); }
+  .modal-footer {
+    display: flex; gap: 8px; justify-content: flex-end;
+    padding: 12px 18px; border-top: 1px solid var(--border);
+  }
 </style>
 </head>
 <body>
@@ -301,8 +340,8 @@ HTML = r"""<!DOCTYPE html>
     <div class="dir-row">
       <label>根目录</label>
       <input type="text" id="dirPath" placeholder="输入要压缩的目录路径 …" spellcheck="false">
-      <button class="btn btn-ghost" onclick="browseDir()">浏览…</button>
-	      <button class="btn btn-ghost" onclick="resetAndScan()">刷新</button>
+      <button class="btn btn-ghost" onclick="openPicker()">浏览…</button>
+      <button class="btn btn-ghost" onclick="resetAndScan()">刷新</button>
     </div>
   </div>
 
@@ -375,6 +414,26 @@ HTML = r"""<!DOCTYPE html>
 
 </div>
 
+<!-- 目录选择弹窗 -->
+<div class="modal-overlay" id="pickerOverlay">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>选择根目录</h3>
+      <button class="modal-close" onclick="closePicker()">&times;</button>
+    </div>
+    <div class="modal-path" id="pickerPath">/</div>
+    <div class="modal-body" id="pickerBody">
+      <div class="empty-picker">加载中…</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost btn-sm" onclick="pickerGoBack()" id="pickerBackBtn">← 上级</button>
+      <span style="flex:1;"></span>
+      <button class="btn btn-ghost btn-sm" onclick="closePicker()">取消</button>
+      <button class="btn btn-primary btn-sm" onclick="pickerSelect()">选择此目录</button>
+    </div>
+  </div>
+</div>
+
 <div class="toasts" id="toasts"></div>
 
 <script>
@@ -428,18 +487,83 @@ fetch("/api/pwd").then(r => r.json()).then(d => {
   resetAndScan();
 });
 
-// 浏览目录按钮：调用系统原生文件选择器
-async function browseDir() {
+// ── 目录选择弹窗 ──────────────────────────────────
+let pickerPath = "/";
+
+async function openPicker() {
+  pickerPath = dirPathEl.value.trim() || "/";
+  if (!pickerPath.startsWith("/")) pickerPath = "/";
+  document.getElementById("pickerOverlay").classList.add("active");
+  await pickerScan(pickerPath);
+}
+
+function closePicker() {
+  document.getElementById("pickerOverlay").classList.remove("active");
+}
+
+async function pickerScan(path) {
+  const body = document.getElementById("pickerBody");
+  const pathEl = document.getElementById("pickerPath");
+  const backBtn = document.getElementById("pickerBackBtn");
+  body.innerHTML = '<div class="empty-picker"><span class="spinner"></span> 扫描中…</div>';
+
   try {
-    const resp = await fetch("/api/browse-dir");
+    const resp = await fetch("/api/scan?path=" + encodeURIComponent(path));
     const data = await resp.json();
-    if (data.path) {
-      dirPathEl.value = data.path;
-      resetAndScan();
+    if (!data.success) {
+      body.innerHTML = '<div class="empty-picker">无法访问此目录</div>';
+      return;
     }
+    pickerPath = path;
+    pathEl.textContent = path;
+    backBtn.disabled = (path === "/");
+
+    const dirs = (data.items || []).filter(it => it.type === "dir");
+    if (dirs.length === 0) {
+      body.innerHTML = '<div class="empty-picker">此目录下没有子目录</div>';
+      return;
+    }
+    body.innerHTML = dirs.map(d =>
+      `<div class="dir-item" ondblclick="pickerNavInto('${escapeHtml(d.name)}')" onclick="pickerClick('${escapeHtml(d.name)}')">
+        <span class="dir-icon">📁</span>
+        <span class="dir-name">${escapeHtml(d.name)}</span>
+      </div>`
+    ).join("");
   } catch (e) {
-    showToast("无法打开文件选择器: " + e.message, "error");
+    body.innerHTML = '<div class="empty-picker">扫描失败</div>';
   }
+}
+
+// 单击选中高亮，双击进入
+let pickerSelected = null;
+function pickerClick(name) {
+  const items = document.querySelectorAll("#pickerBody .dir-item");
+  items.forEach(el => el.style.background = "");
+  const clicked = [...items].find(el => el.querySelector(".dir-name").textContent === name);
+  if (clicked) {
+    clicked.style.background = "#eef2ff";
+    pickerSelected = name;
+  }
+}
+
+async function pickerNavInto(name) {
+  pickerPath = pickerPath.replace(/\/+$/, "") + "/" + name;
+  pickerSelected = null;
+  await pickerScan(pickerPath);
+}
+
+async function pickerGoBack() {
+  if (pickerPath === "/") return;
+  pickerPath = pickerPath.replace(/\/+$/, "").replace(/\/[^/]*$/, "") || "/";
+  pickerSelected = null;
+  await pickerScan(pickerPath);
+}
+
+function pickerSelect() {
+  const target = pickerSelected ? pickerPath.replace(/\/+$/, "") + "/" + pickerSelected : pickerPath;
+  dirPathEl.value = target;
+  closePicker();
+  resetAndScan();
 }
 
 // ── 路径工具 ──────────────────────────────────────────
@@ -1020,25 +1144,6 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/exists":
             target = unquote(qs.get("path", [""])[0])
             self._send_json({"exists": os.path.exists(target) if target else False})
-
-        elif path == "/api/browse-dir":
-            selected = None
-            for picker in ["zenity", "kdialog"]:
-                try:
-                    flag = "--directory" if picker == "zenity" else "--getexistingdirectory"
-                    result = subprocess.run(
-                        [picker, flag],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        selected = result.stdout.strip()
-                        break
-                except Exception:
-                    continue
-            if selected:
-                self._send_json({"path": selected})
-            else:
-                self._send_json({"error": "未选择任何目录"}, 200)
 
         else:
             self._send_json({"error": "Not found"}, 404)
