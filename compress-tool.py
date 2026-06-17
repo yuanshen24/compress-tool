@@ -301,7 +301,8 @@ HTML = r"""<!DOCTYPE html>
     <div class="dir-row">
       <label>根目录</label>
       <input type="text" id="dirPath" placeholder="输入要压缩的目录路径 …" spellcheck="false">
-      <button class="btn btn-ghost" onclick="resetAndScan()">刷新</button>
+      <button class="btn btn-ghost" onclick="browseDir()">浏览…</button>
+	      <button class="btn btn-ghost" onclick="resetAndScan()">刷新</button>
     </div>
   </div>
 
@@ -426,6 +427,20 @@ fetch("/api/pwd").then(r => r.json()).then(d => {
   dirPathEl.value = d.path;
   resetAndScan();
 });
+
+// 浏览目录按钮：调用系统原生文件选择器
+async function browseDir() {
+  try {
+    const resp = await fetch("/api/browse-dir");
+    const data = await resp.json();
+    if (data.path) {
+      dirPathEl.value = data.path;
+      resetAndScan();
+    }
+  } catch (e) {
+    showToast("无法打开文件选择器: " + e.message, "error");
+  }
+}
 
 // ── 路径工具 ──────────────────────────────────────────
 
@@ -1005,6 +1020,25 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/exists":
             target = unquote(qs.get("path", [""])[0])
             self._send_json({"exists": os.path.exists(target) if target else False})
+
+        elif path == "/api/browse-dir":
+            selected = None
+            for picker in ["zenity", "kdialog"]:
+                try:
+                    flag = "--directory" if picker == "zenity" else "--getexistingdirectory"
+                    result = subprocess.run(
+                        [picker, flag],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        selected = result.stdout.strip()
+                        break
+                except Exception:
+                    continue
+            if selected:
+                self._send_json({"path": selected})
+            else:
+                self._send_json({"error": "未选择任何目录"}, 200)
 
         else:
             self._send_json({"error": "Not found"}, 404)
